@@ -36,6 +36,7 @@ class MedoleModbusClient:
     """Class to manage Modbus communication with Medole devices.
 
     This class is implemented as a singleton to ensure only one instance exists.
+    Connection is kept open between operations and only reconnected when necessary.
     """
 
     _instances = {}
@@ -79,6 +80,7 @@ class MedoleModbusClient:
         self.slave_id = slave_id
         self.client = self._create_modbus_client()
         self.lock = asyncio.Lock()
+        self.is_connected = False
         self._initialized = True
 
     def _create_modbus_client(self):
@@ -124,85 +126,96 @@ class MedoleModbusClient:
             timeout=1,
         )
 
+    async def _ensure_connected(self) -> bool:
+        """Ensure the client is connected, reconnect if necessary."""
+        if not self.is_connected:
+            self.is_connected = self.client.connect()
+            if self.is_connected:
+                _LOGGER.debug("Successfully connected to Modbus device")
+            else:
+                _LOGGER.error("Failed to connect to Modbus device")
+        return self.is_connected
+
     async def async_read_register(
         self, address: int, count: int = 1
     ) -> Optional[Any]:
         """Read a register with proper connection handling and locking."""
         try:
             async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
+                if not await self._ensure_connected():
                     return None
 
+                # Wrap the executor job in a function that handles exceptions
+                def read_register_safe():
+                    try:
+                        return self.client.read_holding_registers(
+                            address, count=count, slave=self.slave_id
+                        )
+                    except Exception as ex:
+                        _LOGGER.error(
+                            f"Exception in executor job reading register {address}: {ex}"
+                        )
+                        return None
+
                 result = await self.hass.async_add_executor_job(
-                    lambda: self.client.read_holding_registers(
-                        address, count=count, slave=self.slave_id
-                    )
+                    read_register_safe
                 )
+
+                if result is None:
+                    # Error occurred in the executor job
+                    self.is_connected = False
+                    return None
 
                 if result.isError():
                     _LOGGER.error(f"Error reading register {address}: {result}")
+                    # Connection might be stale, mark as disconnected
+                    self.is_connected = False
                     return None
 
                 return result
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception reading register {address}: {ex}")
+            # Mark connection as closed on exception
+            self.is_connected = False
             return None
-        finally:
-            self.client.close()
 
     async def async_write_register(self, address: int, value: int) -> bool:
         """Write a register with proper connection handling and locking."""
         try:
             async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
+                if not await self._ensure_connected():
                     return False
 
+                # Wrap the executor job in a function that handles exceptions
+                def write_register_safe():
+                    try:
+                        return self.client.write_register(
+                            address, value, slave=self.slave_id
+                        )
+                    except Exception as ex:
+                        _LOGGER.error(
+                            f"Exception in executor job writing register {address}: {ex}"
+                        )
+                        return None
+
                 result = await self.hass.async_add_executor_job(
-                    lambda: self.client.write_register(
-                        address, value, slave=self.slave_id
-                    )
+                    write_register_safe
                 )
+
+                if result is None:
+                    # Error occurred in the executor job
+                    self.is_connected = False
+                    return False
 
                 if result.isError():
                     _LOGGER.error(f"Error writing register {address}: {result}")
+                    # Connection might be stale, mark as disconnected
+                    self.is_connected = False
                     return False
 
                 return True
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception writing register {address}: {ex}")
+            # Mark connection as closed on exception
+            self.is_connected = False
             return False
-        finally:
-            self.client.close()
-
-    async def async_write_registers(
-        self, address: int, values: List[int]
-    ) -> bool:
-        """Write multiple registers with proper connection handling and locking."""
-        try:
-            async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
-                    return False
-
-                result = await self.hass.async_add_executor_job(
-                    lambda: self.client.write_registers(
-                        address, values, slave=self.slave_id
-                    )
-                )
-
-                if result.isError():
-                    _LOGGER.error(
-                        f"Error writing to registers at {address}: {result}"
-                    )
-                    return False
-
-                return True
-        except ModbusException as ex:
-            _LOGGER.error(
-                f"Modbus exception writing to registers at {address}: {ex}"
-            )
-            return False
-        finally:
-            self.client.close()
