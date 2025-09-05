@@ -7,6 +7,6 @@
   "documentation": "https://github.com/aitjcize/ha-medole",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/aitjcize/ha-medole/issues",
-  "requirements": ["pymodbus>=3.0.0"],
+  "requirements": ["pymodbus==3.9.2"],
   "version": "0.1.0"
 }
