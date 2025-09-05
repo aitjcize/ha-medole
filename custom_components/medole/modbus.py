@@ -136,7 +136,7 @@ class MedoleModbusClient:
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.read_holding_registers(
-                        address, count=count, slave=self.slave_id
+                        address, count=count, device_id=self.slave_id
                     )
                 )
 
@@ -161,7 +161,7 @@ class MedoleModbusClient:
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.write_register(
-                        address, value, slave=self.slave_id
+                        address, value, device_id=self.slave_id
                     )
                 )
 
@@ -188,7 +188,7 @@ class MedoleModbusClient:
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.write_registers(
-                        address, values, slave=self.slave_id
+                        address, values, device_id=self.slave_id
                     )
                 )
 

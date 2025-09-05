@@ -5,5 +5,5 @@ mypy_extensions==1.1.0
 packaging==25.0
 pathspec==0.12.1
 platformdirs==4.3.8
-pymodbus==3.9.2
+pymodbus==3.11.1
 ruff==0.11.11
