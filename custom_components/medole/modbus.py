@@ -79,6 +79,7 @@ class MedoleModbusClient:
         self.slave_id = slave_id
         self.client = self._create_modbus_client()
         self.lock = asyncio.Lock()
+        self._connected = False
         self._initialized = True
 
     def _create_modbus_client(self):
@@ -101,7 +102,7 @@ class MedoleModbusClient:
                 bytesize=bytesize,
                 parity=parity,
                 stopbits=stopbits,
-                timeout=1,
+                timeout=3,
             )
 
         # Get TCP connection parameters
@@ -113,7 +114,7 @@ class MedoleModbusClient:
             return ModbusRtuOverTcpClient(
                 host=host,
                 port=port,
-                timeout=1,
+                timeout=3,
                 framer="rtu",  # Use RTU framer for RTU over TCP
             )
 
@@ -121,8 +122,19 @@ class MedoleModbusClient:
         return ModbusTcpClient(
             host=host,
             port=port,
-            timeout=1,
+            timeout=3,
         )
+
+    def _ensure_connection(self) -> bool:
+        """Ensure the client is connected."""
+        if not self._connected:
+            if self.client.connect():
+                self._connected = True
+                _LOGGER.debug("Modbus connection established")
+            else:
+                _LOGGER.error("Failed to establish Modbus connection")
+                return False
+        return True
 
     async def async_read_register(
         self, address: int, count: int = 1
@@ -130,8 +142,7 @@ class MedoleModbusClient:
         """Read a register with proper connection handling and locking."""
         try:
             async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
+                if not self._ensure_connection():
                     return None
 
                 result = await self.hass.async_add_executor_job(
@@ -147,16 +158,14 @@ class MedoleModbusClient:
                 return result
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception reading register {address}: {ex}")
+            self._connected = False  # Reset connection state on error
             return None
-        finally:
-            self.client.close()
 
     async def async_write_register(self, address: int, value: int) -> bool:
         """Write a register with proper connection handling and locking."""
         try:
             async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
+                if not self._ensure_connection():
                     return False
 
                 result = await self.hass.async_add_executor_job(
@@ -172,9 +181,8 @@ class MedoleModbusClient:
                 return True
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception writing register {address}: {ex}")
+            self._connected = False  # Reset connection state on error
             return False
-        finally:
-            self.client.close()
 
     async def async_write_registers(
         self, address: int, values: List[int]
@@ -182,8 +190,7 @@ class MedoleModbusClient:
         """Write multiple registers with proper connection handling and locking."""
         try:
             async with self.lock:
-                if not self.client.connect():
-                    _LOGGER.error("Failed to connect to Modbus device")
+                if not self._ensure_connection():
                     return False
 
                 result = await self.hass.async_add_executor_job(
@@ -203,6 +210,12 @@ class MedoleModbusClient:
             _LOGGER.error(
                 f"Modbus exception writing to registers at {address}: {ex}"
             )
+            self._connected = False  # Reset connection state on error
             return False
-        finally:
+
+    def close(self):
+        """Close the Modbus connection."""
+        if self.client:
             self.client.close()
+            self._connected = False
+            _LOGGER.debug("Modbus connection closed")

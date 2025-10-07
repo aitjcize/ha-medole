@@ -40,6 +40,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, PLATFORMS
     )
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        # Close the Modbus connection
+        data = hass.data[DOMAIN].pop(entry.entry_id)
+        if "client" in data:
+            data["client"].close()
 
     return unload_ok
