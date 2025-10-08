@@ -3,12 +3,14 @@
 # ruff: noqa: I001
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
-from pymodbus.client import ModbusSerialClient
-from pymodbus.client import ModbusTcpClient
-from pymodbus.client import ModbusTcpClient as ModbusRtuOverTcpClient
+from pymodbus.client import (
+    ModbusSerialClient,
+    ModbusTcpClient,
+)
 from pymodbus.exceptions import ModbusException
 
 from .const import (
@@ -79,7 +81,8 @@ class MedoleModbusClient:
         self.slave_id = slave_id
         self.client = self._create_modbus_client()
         self.lock = asyncio.Lock()
-        self._connected = False
+        self._last_request_time = 0
+        self._min_delay = 0.05  # 50ms minimum delay between requests
         self._initialized = True
 
     def _create_modbus_client(self):
@@ -111,11 +114,11 @@ class MedoleModbusClient:
 
         # RTU over TCP
         if connection_type == CONNECTION_TYPE_RTUOVERTCP:
-            return ModbusRtuOverTcpClient(
+            return ModbusTcpClient(
                 host=host,
                 port=port,
                 timeout=3,
-                framer="rtu",  # Use RTU framer for RTU over TCP
+                framer="rtu",
             )
 
         # Regular TCP
@@ -125,16 +128,38 @@ class MedoleModbusClient:
             timeout=3,
         )
 
+    def _throttle_request(self):
+        """Ensure minimum delay between requests to avoid overwhelming the device."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._min_delay:
+            time.sleep(self._min_delay - elapsed)
+        self._last_request_time = time.time()
+
     def _ensure_connection(self) -> bool:
         """Ensure the client is connected."""
-        if not self._connected:
-            if self.client.connect():
-                self._connected = True
-                _LOGGER.debug("Modbus connection established")
-            else:
-                _LOGGER.error("Failed to establish Modbus connection")
-                return False
-        return True
+        # Check if already connected using pymodbus's own connection tracking
+        is_connected = False
+        try:
+            if hasattr(self.client, "connected"):
+                is_connected = self.client.connected
+            elif hasattr(self.client, "is_socket_open"):
+                is_connected = self.client.is_socket_open()
+        except Exception as ex:
+            _LOGGER.debug(
+                f"Cannot verify connection status: {ex}, will attempt connect"
+            )
+
+        if is_connected:
+            return True
+
+        # Not connected, attempt to connect
+        _LOGGER.debug("Modbus not connected, attempting to connect...")
+        if self.client.connect():
+            _LOGGER.debug("Modbus connection established")
+            return True
+        else:
+            _LOGGER.error("Failed to establish Modbus connection")
+            return False
 
     async def async_read_register(
         self, address: int, count: int = 1
@@ -144,6 +169,9 @@ class MedoleModbusClient:
             async with self.lock:
                 if not self._ensure_connection():
                     return None
+
+                # Throttle requests to avoid overwhelming the device
+                await self.hass.async_add_executor_job(self._throttle_request)
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.read_holding_registers(
@@ -156,9 +184,29 @@ class MedoleModbusClient:
                     return None
 
                 return result
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionError,
+            OSError,
+        ) as ex:
+            _LOGGER.warning(
+                f"Connection broken while reading register {address}: {ex}, will reconnect on next attempt"
+            )
+            # Explicitly close to ensure pymodbus knows connection is dead
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            return None
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception reading register {address}: {ex}")
-            self._connected = False  # Reset connection state on error
+            # Close on modbus errors that indicate connection issues
+            if "No response" in str(ex) or "CLOSING CONNECTION" in str(ex):
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
             return None
 
     async def async_write_register(self, address: int, value: int) -> bool:
@@ -167,6 +215,9 @@ class MedoleModbusClient:
             async with self.lock:
                 if not self._ensure_connection():
                     return False
+
+                # Throttle requests to avoid overwhelming the device
+                await self.hass.async_add_executor_job(self._throttle_request)
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.write_register(
@@ -179,9 +230,29 @@ class MedoleModbusClient:
                     return False
 
                 return True
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionError,
+            OSError,
+        ) as ex:
+            _LOGGER.warning(
+                f"Connection broken while writing register {address}: {ex}, will reconnect on next attempt"
+            )
+            # Explicitly close to ensure pymodbus knows connection is dead
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            return False
         except ModbusException as ex:
             _LOGGER.error(f"Modbus exception writing register {address}: {ex}")
-            self._connected = False  # Reset connection state on error
+            # Close on modbus errors that indicate connection issues
+            if "No response" in str(ex) or "CLOSING CONNECTION" in str(ex):
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
             return False
 
     async def async_write_registers(
@@ -192,6 +263,9 @@ class MedoleModbusClient:
             async with self.lock:
                 if not self._ensure_connection():
                     return False
+
+                # Throttle requests to avoid overwhelming the device
+                await self.hass.async_add_executor_job(self._throttle_request)
 
                 result = await self.hass.async_add_executor_job(
                     lambda: self.client.write_registers(
@@ -206,16 +280,35 @@ class MedoleModbusClient:
                     return False
 
                 return True
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionError,
+            OSError,
+        ) as ex:
+            _LOGGER.warning(
+                f"Connection broken while writing registers at {address}: {ex}, will reconnect on next attempt"
+            )
+            # Explicitly close to ensure pymodbus knows connection is dead
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            return False
         except ModbusException as ex:
             _LOGGER.error(
                 f"Modbus exception writing to registers at {address}: {ex}"
             )
-            self._connected = False  # Reset connection state on error
+            # Close on modbus errors that indicate connection issues
+            if "No response" in str(ex) or "CLOSING CONNECTION" in str(ex):
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
             return False
 
     def close(self):
         """Close the Modbus connection."""
         if self.client:
             self.client.close()
-            self._connected = False
             _LOGGER.debug("Modbus connection closed")
