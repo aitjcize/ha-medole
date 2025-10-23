@@ -1,6 +1,6 @@
 {
   "domain": "medole",
-  "name": "Medole",
+  "name": "Medole Dehumidifier",
   "codeowners": ["@aitjcize"],
   "config_flow": true,
   "dependencies": ["modbus"],
