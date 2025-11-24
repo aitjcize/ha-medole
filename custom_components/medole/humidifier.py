@@ -1,6 +1,7 @@
 """Humidifier platform for Medole Dehumidifier integration."""
 
 import logging
+from datetime import timedelta
 
 from homeassistant.components.humidifier import (
     HumidifierAction,
@@ -35,6 +36,9 @@ from .const import (
 # No need to import modbus functions as we'll use the client methods directly
 
 _LOGGER = logging.getLogger(__name__)
+
+# Polling interval
+SCAN_INTERVAL = timedelta(seconds=5)
 
 # Fan speed mapping for modes
 MODES = {
