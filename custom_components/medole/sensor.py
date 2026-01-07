@@ -20,12 +20,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     CONF_NAME,
     DOMAIN,
+    REG_DEHUMIDIFY_MODE,
     REG_FAN_ALARM_HOURS,
     REG_FAN_OPERATION_HOURS,
     REG_HUMIDITY_1,
     REG_HUMIDITY_2,
     REG_OPERATION_STATUS,
     REG_PIPE_TEMPERATURE,
+    REG_PURIFY_MODE,
     REG_TEMPERATURE_1,
     REG_TEMPERATURE_2,
     STATUS_COMPRESSOR_ON,
@@ -215,6 +217,8 @@ class MedoleStatusSensor(MedoleBaseSensor):
         super().__init__(hass, name, client, "status")
         self._attr_name = "Status"
         self._status_value = None
+        self._dehumidify_mode = None
+        self._purify_mode = None
 
     @property
     def extra_state_attributes(self):
@@ -228,6 +232,8 @@ class MedoleStatusSensor(MedoleBaseSensor):
         return {
             "compressor_on": bool(lo_byte & STATUS_COMPRESSOR_ON),
             "fan_on": bool(lo_byte & STATUS_FAN_ON),
+            "dehumidify_mode": bool(self._dehumidify_mode),
+            "air_purification_mode": bool(self._purify_mode),
             "pipe_temp_error": bool(lo_byte & STATUS_PIPE_TEMP_ERROR),
             "humidity_sensor_error": bool(
                 lo_byte & STATUS_HUMIDITY_SENSOR_ERROR
@@ -248,6 +254,19 @@ class MedoleStatusSensor(MedoleBaseSensor):
 
         if result:
             self._status_value = result.registers[0]
+
+            # Read mode registers
+            dehumidify_result = await self._client.async_read_register(
+                REG_DEHUMIDIFY_MODE
+            )
+            purify_result = await self._client.async_read_register(
+                REG_PURIFY_MODE
+            )
+
+            if dehumidify_result:
+                self._dehumidify_mode = dehumidify_result.registers[0] == 1
+            if purify_result:
+                self._purify_mode = purify_result.registers[0] == 1
 
             # Set the state based on errors
             errors = []
@@ -272,9 +291,15 @@ class MedoleStatusSensor(MedoleBaseSensor):
             elif lo_byte & STATUS_COMPRESSOR_ON:
                 self._attr_native_value = "Dehumidifying"
             elif lo_byte & STATUS_FAN_ON:
-                self._attr_native_value = "Fan Only"
+                # Fan running - check mode
+                if self._purify_mode and not self._dehumidify_mode:
+                    self._attr_native_value = "Air Purification"
+                else:
+                    self._attr_native_value = "Fan Only"
             else:
                 self._attr_native_value = "Idle"
         else:
             self._attr_native_value = "Communication Error"
             self._status_value = None
+            self._dehumidify_mode = None
+            self._purify_mode = None

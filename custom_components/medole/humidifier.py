@@ -18,8 +18,6 @@ from .const import (
     CONTINUOUS_DEHUMIDIFICATION,
     DOMAIN,
     FAN_SPEED_HIGH,
-    FAN_SPEED_LOW,
-    FAN_SPEED_MEDIUM,
     MAX_HUMIDITY,
     MIN_HUMIDITY,
     REG_DEHUMIDIFY_MODE,
@@ -40,14 +38,10 @@ _LOGGER = logging.getLogger(__name__)
 # Polling interval
 SCAN_INTERVAL = timedelta(seconds=5)
 
-# Fan speed mapping for modes
-MODES = {
-    FAN_SPEED_LOW: "Low",
-    FAN_SPEED_MEDIUM: "Medium",
-    FAN_SPEED_HIGH: "High",
-}
-
-REVERSE_MODES = {v: k for k, v in MODES.items()}
+# Preset modes
+PRESET_MODE_DEHUMIDIFY = "Dehumidify"
+PRESET_MODE_AIR_PURIFICATION = "Air Purification"
+PRESET_MODES = [PRESET_MODE_DEHUMIDIFY, PRESET_MODE_AIR_PURIFICATION]
 
 
 async def async_setup_entry(
@@ -75,7 +69,7 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
     _attr_name = None
     _attr_supported_features = HumidifierEntityFeature.MODES
     _attr_device_class = HumidifierDeviceClass.DEHUMIDIFIER
-    _attr_available_modes = list(REVERSE_MODES.keys())
+    _attr_available_modes = PRESET_MODES
     _attr_min_humidity = MIN_HUMIDITY
     _attr_max_humidity = MAX_HUMIDITY
 
@@ -97,6 +91,7 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
         self._attr_mode = None
         self._attr_is_on = False
         self._attr_action = None
+        self._current_preset = PRESET_MODE_DEHUMIDIFY
 
     @property
     def current_humidity(self):
@@ -166,14 +161,27 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
         else:
             _LOGGER.error("Failed to read humidity setpoint")
 
-        # Get the fan speed
-        fan_speed_result = await self._client.async_read_register(REG_FAN_SPEED)
+        # Check which mode is active (dehumidify or air purification)
+        dehumidify_result = await self._client.async_read_register(
+            REG_DEHUMIDIFY_MODE
+        )
+        purify_result = await self._client.async_read_register(REG_PURIFY_MODE)
 
-        if fan_speed_result:
-            fan_speed = fan_speed_result.registers[0]
-            self._attr_mode = MODES.get(fan_speed, "Medium")
-        else:
-            _LOGGER.error("Failed to read fan speed")
+        if dehumidify_result and purify_result:
+            dehumidify_on = dehumidify_result.registers[0] == 1
+            purify_on = purify_result.registers[0] == 1
+
+            # Prioritize showing dehumidify mode when both are active
+            if dehumidify_on:
+                self._current_preset = PRESET_MODE_DEHUMIDIFY
+                self._attr_mode = PRESET_MODE_DEHUMIDIFY
+            elif purify_on:
+                self._current_preset = PRESET_MODE_AIR_PURIFICATION
+                self._attr_mode = PRESET_MODE_AIR_PURIFICATION
+            else:
+                # Neither mode is active
+                self._current_preset = PRESET_MODE_DEHUMIDIFY
+                self._attr_mode = PRESET_MODE_DEHUMIDIFY
 
         # Get the current humidity
         humidity_result = await self._client.async_read_register(REG_HUMIDITY_1)
@@ -185,16 +193,37 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
 
     async def async_set_mode(self, mode: str) -> None:
         """Set new mode."""
-        fan_speed = REVERSE_MODES.get(mode, FAN_SPEED_MEDIUM)
-
-        success = await self._client.async_write_register(
-            REG_FAN_SPEED, fan_speed
-        )
-
-        if success:
-            self._attr_mode = mode
-        else:
-            _LOGGER.error("Failed to set mode to %s", mode)
+        if mode == PRESET_MODE_AIR_PURIFICATION:
+            # Switch to air purification mode with high fan speed
+            await self._client.async_write_register(
+                REG_FAN_SPEED, FAN_SPEED_HIGH
+            )
+            await self._client.async_write_register(REG_DEHUMIDIFY_MODE, 0)
+            success = await self._client.async_write_register(
+                REG_PURIFY_MODE, 1
+            )
+            if success:
+                self._current_preset = PRESET_MODE_AIR_PURIFICATION
+                self._attr_mode = mode
+                _LOGGER.info("Switched to air purification mode")
+            else:
+                _LOGGER.error("Failed to set air purification mode")
+        elif mode == PRESET_MODE_DEHUMIDIFY:
+            # Switch to dehumidify mode with high fan speed
+            await self._client.async_write_register(
+                REG_FAN_SPEED, FAN_SPEED_HIGH
+            )
+            # Enable both purify and dehumidify modes
+            await self._client.async_write_register(REG_PURIFY_MODE, 1)
+            success = await self._client.async_write_register(
+                REG_DEHUMIDIFY_MODE, 1
+            )
+            if success:
+                self._current_preset = PRESET_MODE_DEHUMIDIFY
+                self._attr_mode = PRESET_MODE_DEHUMIDIFY
+                _LOGGER.info("Switched to dehumidify mode")
+            else:
+                _LOGGER.error("Failed to set dehumidify mode")
 
     async def async_set_humidity(self, humidity: int) -> None:
         """Set new target humidity."""
@@ -212,6 +241,9 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         """Turn the device on."""
+        # Set fan speed to high
+        await self._client.async_write_register(REG_FAN_SPEED, FAN_SPEED_HIGH)
+
         # Set the power on
         result = await self._client.async_write_register(REG_POWER, 1)
         if not result:
