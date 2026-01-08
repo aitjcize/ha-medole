@@ -249,13 +249,15 @@ class MedoleDehumidifierHumidifier(HumidifierEntity):
         if not result:
             _LOGGER.error("Failed to turn on device")
 
-        # Set dehumidify mode on
-        result = await self._client.async_write_register(REG_DEHUMIDIFY_MODE, 1)
-        if not result:
-            _LOGGER.error("Failed to turn on dehumidify mode")
-
-        # Set purify mode off
-        result = await self._client.async_write_register(REG_PURIFY_MODE, 0)
+        # Restore the previous preset mode
+        if self._current_preset == PRESET_MODE_AIR_PURIFICATION:
+            # Air purification only
+            await self._client.async_write_register(REG_DEHUMIDIFY_MODE, 0)
+            await self._client.async_write_register(REG_PURIFY_MODE, 1)
+        else:
+            # Dehumidify mode (with air purification)
+            await self._client.async_write_register(REG_PURIFY_MODE, 1)
+            await self._client.async_write_register(REG_DEHUMIDIFY_MODE, 1)
 
         self._attr_is_on = True
 
